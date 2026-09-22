@@ -1,8 +1,10 @@
+import gc
 import io
 import json
 import logging
 import os
 import re
+import tempfile
 import uuid
 from typing import AsyncGenerator, Optional
 
@@ -253,9 +255,10 @@ Kullanıcı Sorusu: {message}"""
 async def upload_pdf(file: UploadFile = File(...)):
     """
     1. UploadFile tipinde bir PDF dosyasını kabul eder.
-    2. pypdf.PdfReader ile metni sayfa sayfa okur.
-    3. Metni 500/100 kuralına göre chunk'lara ayırır.
-    4. Her parçayı benzersiz ID ve metadata ile ChromaDB'ye kaydeder.
+    2. RAM kullanımını 1-2 MB seviyesinde tutmak için diske geçici dosya olarak stream eder.
+    3. pypdf.PdfReader ile diskten sayfa sayfa okur, RAM'i korumak için reader nesnesini hemen temizler.
+    4. Metni 500/100 kuralına göre chunk'lara ayırır.
+    5. ChromaDB'ye ONNX tensör patlamasını (OOM) önlemek için 20'şerli batch'ler halinde kaydeder.
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -263,12 +266,28 @@ async def upload_pdf(file: UploadFile = File(...)):
             detail="Geçersiz dosya formatı. Lütfen yalnızca .pdf dosyası yükleyin.",
         )
 
+    tmp_path = None
     try:
-        content = await file.read()
-        if len(content) == 0:
+        # 1. Dosyayı diske 1 MB'lık tamponlarla yaz (RAM şişmesini engeller)
+        MAX_FILE_SIZE = 35 * 1024 * 1024  # 35 MB
+        total_size = 0
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp_path = tmp.name
+            while chunk := await file.read(1024 * 1024):
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Dosya boyutu çok büyük ({round(total_size / (1024 * 1024), 1)} MB). Lütfen 35 MB altındaki PDF yükleyin.",
+                    )
+                tmp.write(chunk)
+
+        if total_size == 0:
             raise HTTPException(status_code=400, detail="Yüklenen dosya boş.")
 
-        reader = pypdf.PdfReader(io.BytesIO(content))
+        # 2. PyPDF ile disk üzerinden sayfa sayfa oku
+        reader = pypdf.PdfReader(tmp_path)
         pages_count = len(reader.pages)
 
         if pages_count == 0:
@@ -276,27 +295,51 @@ async def upload_pdf(file: UploadFile = File(...)):
                 status_code=400, detail="PDF belgesinde sayfa bulunamadı."
             )
 
-        # Sayfa sayfa metin çıkarma
-        full_text = ""
-        for page_idx, page in enumerate(reader.pages):
-            page_text = page.extract_text()
-            if page_text:
-                full_text += f"\n{page_text}"
+        # Render 512MB RAM ve CPU zaman aşımı koruması (Maksimum 150 sayfa)
+        MAX_PAGES = 150
+        pages_to_process = min(pages_count, MAX_PAGES)
 
-        cleaned_text = full_text.strip()
+        full_text_parts: list[str] = []
+        for page_idx in range(pages_to_process):
+            try:
+                page = reader.pages[page_idx]
+                page_text = page.extract_text()
+                if page_text and page_text.strip():
+                    full_text_parts.append(page_text.strip())
+            except Exception as p_err:
+                logger.warning(f"Sayfa {page_idx + 1} okunurken hata: {p_err}")
+                continue
+
+        cleaned_text = "\n\n".join(full_text_parts).strip()
+
+        # PyPDF nesnelerini bellekten derhal serbest bırak
+        del reader
+        del full_text_parts
+        gc.collect()
+
         if not cleaned_text:
             raise HTTPException(
                 status_code=400,
-                detail="PDF dosyasından metin okunamadı. Taranmış resim veya korumalı bir belge olabilir.",
+                detail="PDF dosyasından metin okunamadı. Taranmış resim/fotoğraf veya korumalı bir belge olabilir. Lütfen seçilebilir metin içeren bir PDF yükleyin.",
             )
 
         # 500 karakter / 100 karakter örtüşmeli parçalama
         chunks = chunk_text(cleaned_text, chunk_size=500, overlap=100)
+        del cleaned_text
+        gc.collect()
 
         if not chunks:
             raise HTTPException(
                 status_code=400, detail="Metin parçalara ayrılamadı."
             )
+
+        # Maksimum chunk sınırı (Render 512MB RAM ve 100sn timeout güvencesi)
+        MAX_CHUNKS = 800
+        if len(chunks) > MAX_CHUNKS:
+            logger.warning(
+                f"Doküman çok büyük ({len(chunks)} parça). Bellek ve performans için ilk {MAX_CHUNKS} parça alınıyor."
+            )
+            chunks = chunks[:MAX_CHUNKS]
 
         # ChromaDB için hazırlık
         ids: list[str] = []
@@ -323,20 +366,29 @@ async def upload_pdf(file: UploadFile = File(...)):
         except Exception:
             pass
 
-        coll.add(
-            ids=ids,
-            documents=documents,
-            metadatas=metadatas,
-        )
+        # KRİTİK ADIM: 20'şerli batch'ler halinde ekle!
+        # Tek seferde yüzlerce parça göndermek ONNX tensör belleğini patlatır (OOM - 512MB çökmesi).
+        BATCH_SIZE = 20
+        for i in range(0, len(chunks), BATCH_SIZE):
+            batch_ids = ids[i : i + BATCH_SIZE]
+            batch_docs = documents[i : i + BATCH_SIZE]
+            batch_metas = metadatas[i : i + BATCH_SIZE]
+            coll.add(
+                ids=batch_ids,
+                documents=batch_docs,
+                metadatas=batch_metas,
+            )
+            gc.collect()
 
         logger.info(
-            f"PDF '{file.filename}' başarıyla indekslendi: {pages_count} sayfa, {len(chunks)} parça."
+            f"PDF '{file.filename}' başarıyla indekslendi: {pages_to_process}/{pages_count} sayfa, {len(chunks)} parça."
         )
 
         return {
             "status": "success",
             "filename": file.filename,
-            "pages_processed": pages_count,
+            "pages_processed": pages_to_process,
+            "total_pages": pages_count,
             "chunks_indexed": len(chunks),
             "total_collection_chunks": coll.count(),
         }
@@ -348,6 +400,14 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=500, detail=f"PDF işlenirken bir hata oluştu: {str(e)}"
         )
+    finally:
+        # Geçici dosyayı güvenle temizle
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        gc.collect()
 
 
 @app.post("/chat/stream", summary="RAG Streaming Chat (POST)")

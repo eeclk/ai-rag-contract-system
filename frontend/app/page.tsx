@@ -91,6 +91,7 @@ export default function ChatPage() {
 
   // PDF Upload & Status States
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadingInfo, setUploadingInfo] = useState<string | null>(null);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [activeDoc, setActiveDoc] = useState<UploadedDoc | null>(null);
@@ -146,23 +147,42 @@ export default function ChatPage() {
       return;
     }
 
+    const sizeMb = file.size / (1024 * 1024);
+    if (sizeMb > 35) {
+      setUploadError(
+        `Dosya boyutu çok büyük (${sizeMb.toFixed(1)} MB). Render ücretsiz planının bellek sınırı (512 MB) nedeniyle lütfen 35 MB altındaki PDF yükleyin.`
+      );
+      return;
+    }
+
     setIsUploading(true);
+    setUploadingInfo(`${file.name} (${sizeMb.toFixed(1)} MB)`);
     setUploadError(null);
     setUploadMessage(null);
 
     const formData = new FormData();
     formData.append("file", file);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 sn zaman aşımı
+
     try {
       const response = await fetch(UPLOAD_URL, {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
-      const data = await response.json();
+      let data: any = {};
+      try {
+        data = await response.json();
+      } catch {
+        // Render 502/504 veya HTML hata sayfası
+      }
 
       if (!response.ok) {
-        throw new Error(data.detail || "Dosya yüklenirken bir hata oluştu.");
+        throw new Error(data.detail || `Sunucu hatası (${response.status}): Dosya işlenemedi.`);
       }
 
       setActiveDoc({
@@ -171,13 +191,31 @@ export default function ChatPage() {
         chunks: data.chunks_indexed || 0,
       });
 
-      setUploadMessage("PDF hazır, artık soru sorabilirsiniz!");
+      if (data.total_pages && data.pages_processed < data.total_pages) {
+        setUploadMessage(
+          `PDF hazır (${data.pages_processed}/${data.total_pages} sayfa, ${data.chunks_indexed} parça indekslendi). Artık soru sorabilirsiniz!`
+        );
+      } else {
+        setUploadMessage(
+          `PDF başarıyla işlendi (${data.pages_processed || 1} sayfa, ${data.chunks_indexed || 0} parça). Artık soru sorabilirsiniz!`
+        );
+      }
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "PDF yüklenirken bir hata oluştu.";
+      clearTimeout(timeoutId);
+      let msg = "PDF yüklenirken bir hata oluştu.";
+      if (err instanceof Error) {
+        if (err.name === "AbortError") {
+          msg = "Dosya yükleme zaman aşımına uğradı (120 sn). Lütfen internet bağlantınızı kontrol edip tekrar deneyin.";
+        } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
+          msg = "Sunucu bağlantısı koptu (NetworkError). Dosya boyutu Render ücretsiz sunucu belleğini (512 MB) zorlamış olabilir.";
+        } else {
+          msg = err.message;
+        }
+      }
       setUploadError(msg);
     } finally {
       setIsUploading(false);
+      setUploadingInfo(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -483,8 +521,7 @@ export default function ChatPage() {
             <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-indigo-950/60 border border-indigo-600/40 text-indigo-200 text-xs shadow animate-pulse">
               <span className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin shrink-0" />
               <span className="font-medium">
-                Belge indeksleniyor... Sayfalar okunuyor ve ChromaDB&apos;ye
-                aktarılıyor.
+                {uploadingInfo ? `${uploadingInfo} ` : ""}işleniyor... Sayfalar okunuyor ve ChromaDB&apos;ye indeksleniyor (büyük belgelerde 20-40 sn sürebilir).
               </span>
             </div>
           )}

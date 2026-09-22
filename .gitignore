@@ -1,0 +1,24 @@
+﻿# Environments & Secrets
+.env
+*.env
+backend/.env
+frontend/.env.local
+frontend/.env*.local
+
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/chroma_db/
+*.pyc
+*.pyo
+*.pyd
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel
+
+# Misc
+.DS_Store
+Thumbs.db

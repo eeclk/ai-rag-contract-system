@@ -113,29 +113,11 @@ export default function ChatPage() {
     const checkServer = async () => {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
         const res = await fetch(HEALTH_URL, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (res.ok && isMounted) {
-          const data = await res.json().catch(() => ({}));
           setServerStatus("online");
-
-          // Eğer sunucuda zaten indekslenmiş parçalar varsa otomatik olarak aktif belge yap
-          if (data.chroma_chunks && data.chroma_chunks > 0) {
-            setActiveDoc((prev) => {
-              if (prev) return prev;
-              return {
-                filename: data.active_filename || "Yüklenen Belge",
-                pages: 1,
-                chunks: data.chroma_chunks,
-              };
-            });
-            setUploadMessage((prev) => {
-              if (prev) return prev;
-              return `Sistemde hazır ${data.chroma_chunks} parçalık belge bulundu (${data.active_filename || "Sözleşme"}). Artık soru sorabilirsiniz!`;
-            });
-            setUploadError(null);
-          }
         } else if (isMounted) {
           setServerStatus("waking");
         }
@@ -144,7 +126,34 @@ export default function ChatPage() {
       }
     };
 
+    // İlk açılışta sunucudaki belgeyi sorgula
+    const checkExistingDoc = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/documents`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.total_chunks && data.total_chunks > 0 && isMounted) {
+            setActiveDoc((prev) => {
+              if (prev) return prev;
+              return {
+                filename: data.active_filename || "Yüklenen Sözleşme",
+                pages: 1,
+                chunks: data.total_chunks,
+              };
+            });
+            setUploadMessage((prev) => {
+              if (prev) return prev;
+              return `Sistemde hazır belge bulundu (${data.active_filename || "Sözleşme"}, ${data.total_chunks} parça). Soru sorabilirsiniz!`;
+            });
+          }
+        }
+      } catch {
+        // İsteğe bağlı, hata fırlatma
+      }
+    };
+
     checkServer();
+    checkExistingDoc();
     const interval = setInterval(checkServer, 15000);
     return () => {
       isMounted = false;

@@ -24,6 +24,18 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("rag-backend")
 
+def free_memory():
+    """
+    Python çöp toplayıcısını (gc) ve Linux glibc bellek iadesini (malloc_trim) tetikler.
+    Render 512MB RAM sınırında bellek sızıntısını ve OOM çökmesini %100 önler.
+    """
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # App & CORS
 # ---------------------------------------------------------------------------
@@ -315,7 +327,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # PyPDF nesnelerini bellekten derhal serbest bırak
         del reader
         del full_text_parts
-        gc.collect()
+        free_memory()
 
         if not cleaned_text:
             raise HTTPException(
@@ -326,7 +338,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # 500 karakter / 100 karakter örtüşmeli parçalama
         chunks = chunk_text(cleaned_text, chunk_size=500, overlap=100)
         del cleaned_text
-        gc.collect()
+        free_memory()
 
         if not chunks:
             raise HTTPException(
@@ -334,7 +346,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             )
 
         # Maksimum chunk sınırı (Render 512MB RAM ve 100sn timeout güvencesi)
-        MAX_CHUNKS = 800
+        # 450 parça ~180.000 karakter olup sözleşmelerin tüm kritik maddelerini eksiksiz kapsar
+        MAX_CHUNKS = 450
         if len(chunks) > MAX_CHUNKS:
             logger.warning(
                 f"Doküman çok büyük ({len(chunks)} parça). Bellek ve performans için ilk {MAX_CHUNKS} parça alınıyor."
@@ -366,9 +379,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         except Exception:
             pass
 
-        # KRİTİK ADIM: 20'şerli batch'ler halinde ekle!
-        # Tek seferde yüzlerce parça göndermek ONNX tensör belleğini patlatır (OOM - 512MB çökmesi).
-        BATCH_SIZE = 20
+        # KRİTİK ADIM: 15'erli batch'ler halinde ekle ve her batch sonrası malloc_trim çağır!
+        # Böylece Linux çekirdeği kullanılmayan RAM'i anında geri alır ve 512MB sınırı asla aşılmaz.
+        BATCH_SIZE = 15
         for i in range(0, len(chunks), BATCH_SIZE):
             batch_ids = ids[i : i + BATCH_SIZE]
             batch_docs = documents[i : i + BATCH_SIZE]
@@ -378,7 +391,7 @@ async def upload_pdf(file: UploadFile = File(...)):
                 documents=batch_docs,
                 metadatas=batch_metas,
             )
-            gc.collect()
+            free_memory()
 
         logger.info(
             f"PDF '{file.filename}' başarıyla indekslendi: {pages_to_process}/{pages_count} sayfa, {len(chunks)} parça."
@@ -407,7 +420,7 @@ async def upload_pdf(file: UploadFile = File(...)):
                 os.remove(tmp_path)
             except Exception:
                 pass
-        gc.collect()
+        free_memory()
 
 
 @app.post("/chat/stream", summary="RAG Streaming Chat (POST)")

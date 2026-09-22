@@ -113,11 +113,29 @@ export default function ChatPage() {
     const checkServer = async () => {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         const res = await fetch(HEALTH_URL, { signal: controller.signal });
         clearTimeout(timeoutId);
         if (res.ok && isMounted) {
+          const data = await res.json().catch(() => ({}));
           setServerStatus("online");
+
+          // Eğer sunucuda zaten indekslenmiş parçalar varsa otomatik olarak aktif belge yap
+          if (data.chroma_chunks && data.chroma_chunks > 0) {
+            setActiveDoc((prev) => {
+              if (prev) return prev;
+              return {
+                filename: data.active_filename || "Yüklenen Belge",
+                pages: 1,
+                chunks: data.chroma_chunks,
+              };
+            });
+            setUploadMessage((prev) => {
+              if (prev) return prev;
+              return `Sistemde hazır ${data.chroma_chunks} parçalık belge bulundu (${data.active_filename || "Sözleşme"}). Artık soru sorabilirsiniz!`;
+            });
+            setUploadError(null);
+          }
         } else if (isMounted) {
           setServerStatus("waking");
         }
@@ -127,7 +145,7 @@ export default function ChatPage() {
     };
 
     checkServer();
-    const interval = setInterval(checkServer, 20000);
+    const interval = setInterval(checkServer, 15000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -164,7 +182,7 @@ export default function ChatPage() {
     formData.append("file", file);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120 sn zaman aşımı
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 dakika zaman aşımı
 
     try {
       const response = await fetch(UPLOAD_URL, {
@@ -205,7 +223,7 @@ export default function ChatPage() {
       let msg = "PDF yüklenirken bir hata oluştu.";
       if (err instanceof Error) {
         if (err.name === "AbortError") {
-          msg = "Dosya yükleme zaman aşımına uğradı (120 sn). Lütfen internet bağlantınızı kontrol edip tekrar deneyin.";
+          msg = "Dosya yükleme zaman aşımına uğradı (5 dk). Büyük belgeler arka planda indekslenmeye devam ediyor olabilir; sayfayı yenileyebilirsiniz.";
         } else if (err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
           msg = "Sunucu bağlantısı koptu (NetworkError). Dosya boyutu Render ücretsiz sunucu belleğini (512 MB) zorlamış olabilir.";
         } else {

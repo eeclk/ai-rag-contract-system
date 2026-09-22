@@ -470,11 +470,27 @@ async def reset_documents() -> dict:
 
 @app.get("/health", summary="Health Check")
 async def health() -> dict:
-    coll = get_collection()
-    return {
-        "status": "ok",
-        "chroma_chunks": coll.count(),
-    }
+    try:
+        coll = get_collection()
+        cnt = coll.count()
+        last_filename = None
+        if cnt > 0:
+            sample = coll.get(limit=1)
+            metas = sample.get("metadatas", [])
+            if metas and isinstance(metas[0], dict):
+                last_filename = metas[0].get("filename")
+        return {
+            "status": "ok",
+            "chroma_chunks": cnt,
+            "active_filename": last_filename,
+        }
+    except Exception as e:
+        return {
+            "status": "ok",
+            "chroma_chunks": 0,
+            "active_filename": None,
+            "error": str(e),
+        }
 
 
 # ---------------------------------------------------------------------------

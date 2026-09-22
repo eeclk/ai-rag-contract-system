@@ -20,12 +20,36 @@ interface UploadedDoc {
 // ---------------------------------------------------------------------------
 // Dynamic API URLs (Local & Production via NEXT_PUBLIC_API_URL)
 // ---------------------------------------------------------------------------
-const RAW_API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const API_BASE_URL = RAW_API_URL.replace(/\/+$/, "");
+function getApiBaseUrl(): string {
+  let url = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").trim();
+  url = url.replace(/\/+$/, "");
+
+  // Eğer protokol girilmediyse (örn: my-api.onrender.com)
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    if (url.includes("localhost") || url.includes("127.0.0.1")) {
+      url = `http://${url}`;
+    } else {
+      url = `https://${url}`;
+    }
+  }
+
+  // Canlı ortamda http:// kaldıysa Mixed Content hatasını önlemek için kesinlikle https:// yap
+  if (
+    url.startsWith("http://") &&
+    !url.includes("localhost") &&
+    !url.includes("127.0.0.1")
+  ) {
+    url = url.replace(/^http:\/\//i, "https://");
+  }
+
+  return url;
+}
+
+const API_BASE_URL = getApiBaseUrl();
 const CHAT_STREAM_URL = `${API_BASE_URL}/chat/stream`;
 const UPLOAD_URL = `${API_BASE_URL}/upload`;
 const HEALTH_URL = `${API_BASE_URL}/health`;
+
 
 // ---------------------------------------------------------------------------
 // Helpers

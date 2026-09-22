@@ -12,6 +12,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ChromaDB ONNX modelini derleme aşamasında indirip imaja göm
+# Böylece ilk istekte 79MB indirme gecikmesi ve timeout yaşanmaz
+RUN python -c "import chromadb; client = chromadb.Client(); coll = client.create_collection('init'); coll.add(ids=['1'], documents=['init']); client.delete_collection('init')"
+
+
 # Uygulama kodlarını kopyala
 COPY . .
 

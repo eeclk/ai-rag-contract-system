@@ -120,19 +120,35 @@ export default function ChatPage() {
   // Render.com Cold Start & Sunucu Sağlık Kontrolü
   useEffect(() => {
     let isMounted = true;
-    const checkServer = async () => {
+    let pollTimer: NodeJS.Timeout | null = null;
+
+    const checkServer = async (manual = false) => {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        // Render ücretsiz planında cold-start uyanması 45-75 saniye sürebilir.
+        // Kısa timeout (6s) uyanma isteğini erkenden iptal edip döngüye sokuyordu.
+        const timeoutId = setTimeout(() => controller.abort(), 75000);
+
         const res = await fetch(HEALTH_URL, { signal: controller.signal });
         clearTimeout(timeoutId);
+
         if (res.ok && isMounted) {
           setServerStatus("online");
+          checkExistingDoc();
         } else if (isMounted) {
           setServerStatus("waking");
         }
       } catch {
-        if (isMounted) setServerStatus("waking");
+        if (isMounted) {
+          setServerStatus("waking");
+        }
+      } finally {
+        if (isMounted && !manual) {
+          // Sunucu online ise 20 sn, uyanıyorsa 5 sn aralıkla yokla
+          pollTimer = setTimeout(() => {
+            checkServer();
+          }, 8000);
+        }
       }
     };
 
@@ -166,10 +182,10 @@ export default function ChatPage() {
 
     checkServer();
     checkExistingDoc();
-    const interval = setInterval(checkServer, 15000);
+
     return () => {
       isMounted = false;
-      clearInterval(interval);
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, []);
 

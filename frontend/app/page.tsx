@@ -51,6 +51,16 @@ const UPLOAD_URL = `${API_BASE_URL}/upload`;
 const HEALTH_URL = `${API_BASE_URL}/health`;
 
 
+function getSessionId(): string {
+  if (typeof window === "undefined") return "default-session";
+  let sid = localStorage.getItem("docusense_session_id");
+  if (!sid) {
+    sid = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `sess_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    localStorage.setItem("docusense_session_id", sid);
+  }
+  return sid;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -129,7 +139,9 @@ export default function ChatPage() {
     // İlk açılışta sunucudaki belgeyi sorgula
     const checkExistingDoc = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/documents`);
+        const res = await fetch(`${API_BASE_URL}/documents`, {
+          headers: { "X-Session-ID": getSessionId() },
+        });
         if (res.ok) {
           const data = await res.json();
           if (data.total_chunks && data.total_chunks > 0 && isMounted) {
@@ -196,6 +208,9 @@ export default function ChatPage() {
     try {
       const response = await fetch(UPLOAD_URL, {
         method: "POST",
+        headers: {
+          "X-Session-ID": getSessionId(),
+        },
         body: formData,
         signal: controller.signal,
       });
@@ -282,7 +297,10 @@ export default function ChatPage() {
     try {
       const response = await fetch(CHAT_STREAM_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Session-ID": getSessionId(),
+        },
         body: JSON.stringify({ message: userMessage }),
         signal: abortRef.current.signal,
       });
